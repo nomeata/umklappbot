@@ -1,0 +1,1 @@
+-c "cabal new-repl exe:umklappbot" --restart umklappbot.cabal -T Main.main

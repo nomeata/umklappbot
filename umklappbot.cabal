@@ -1,0 +1,45 @@
+cabal-version: 2.2
+name: umklappbot
+version: 0.1
+-- build-type: Custom
+build-type: Simple
+license: MIT
+license-file: LICENSE
+copyright: Joachim Breitner
+author: Joachim Breitner
+maintainer: Joachim Breitner <mail@joachim-breitner.de>
+homepage: https://github.com/nomeata/umklappbot
+bug-reports: https://github.com/nomeata/umklappbot/issues
+synopsis: Umklappspiel on Telegram
+description:
+category: Games
+
+source-repository head
+  type: git
+  location: https://github.com/nomeata/umklappbot
+
+executable umklappbot
+  main-is: Lambda.hs
+  other-modules: Telegram
+  other-modules: Umklapp
+  hs-source-dirs: src
+  build-depends: base
+  build-depends: bytestring
+  build-depends: text
+  build-depends: exceptions
+  build-depends: containers
+  build-depends: aeson
+  build-depends: base64-bytestring
+  build-depends: aws-lambda-haskell-runtime
+  build-depends: telegram-api
+  build-depends: http-client
+  build-depends: http-client-tls
+  build-depends: transformers
+  build-depends: mtl
+  build-depends: aws
+  build-depends: resourcet
+  build-depends: data-default
+  build-depends: pretty-show
+  default-language:    Haskell2010
+
+  ghc-options: -Wall
