@@ -122,12 +122,22 @@ askNextPlayer s
       then "Du fängst an! Wie lautet der erste Satz der Geschichte?"
       else
         let l = last (sentences story) in
-        "Du bist dran. Der letzte Satz von " <> user_first_name (author l) <> " war:\n" <>
-         phrase l <> "\n" <>
+        "Du bist dran. Der letzte Satz von " <> user_first_name (author l) <> " war:\n\n" <>
+         phrase l <> "\n\n" <>
          "Wie soll der nächste Satz lauten?\n" <>
          "Wenn er mit „Ende.“ endet, beendet er die Geschichte."
 
   | otherwise = return ()
+
+endStory :: User -> Story -> TelegramClient ()
+endStory user story = do
+  void $ sendMessageM $ sendMessageRequest (newMsgChat story) $
+    user_first_name user <> " hat die Geschichte beendet. Hier ist sie " <>
+    "in voller Pracht:\n" <>
+    "\n" <>
+    T.unlines (map phrase (sentences story)) <>
+    "\n" <>
+    "Lust auf nochmal? Schreib einfach /neu!"
 
 handleUpdate :: State -> Update -> TelegramClient (Maybe State)
 handleUpdate s Update{ message = Just m } = do
@@ -154,10 +164,18 @@ handleUpdate s Update{ message = Just m } = do
       return $ Just s'
 
     | Just txt <- text m
-    , "/start" `T.isPrefixOf` txt -> do
+    , "/start" `T.isPrefixOf` txt
+    , Private <- chat_type (chat m) -> do
       liftIO $ pPrint (txt, user)
       send "Hallo! Lade mich doch in eine Gruppe ein!"
       return Nothing
+
+    | Just txt <- text m
+    , Just story <- currentStory s
+    , Group <- chat_type (chat m)
+    , "/end" `T.isPrefixOf` txt -> do
+      endStory user story
+      return $ Just $ setNoStory s
 
     | iJoined m -> do
       send $
@@ -169,6 +187,7 @@ handleUpdate s Update{ message = Just m } = do
 
     | Just txt <- text m
     , "/neu" `T.isPrefixOf` txt
+    , Group <- chat_type (chat m)
     , Nothing <- currentStory s
     -> do
       -- TODO: Check if in a group
@@ -180,6 +199,7 @@ handleUpdate s Update{ message = Just m } = do
 
     | Just txt <- text m
     , "/neu" `T.isPrefixOf` txt
+    , Group <- chat_type (chat m)
     , Just story <- currentStory s
     -> do
       send $ "Es läuft schon eine Geschichte, macht doch die erstmal fertig." <>
@@ -187,27 +207,33 @@ handleUpdate s Update{ message = Just m } = do
       return Nothing
 
     | Just txt <- text m
+    , "/weristdran" `T.isPrefixOf` txt
+    -> do
+      send $ case currentStory s of
+        Nothing -> "Es läuft gerade keine Geschichte. Mit /neu startest du eine neue!"
+        Just story ->
+          case nextToPlay story of
+            Just u -> "Es ist gerade " <> user_first_name u <> " dran. " <>
+                      user_first_name u <> ", schau mal im privaten Chat!"
+            Nothing -> "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
+      return Nothing
+
+    | Just txt <- text m
     , Just story <- currentStory s
     , Just active_user <- nextToPlay story
     , user_id active_user == user_id user
+    , Private <- chat_type (chat m)
     -> do
       let story' = addSentence user txt story
       if isEndPhrase txt
       then do
         send $ "Das wars! Die volle Geschichte kannst du im Gruppenchat lesen."
-
-        void $ sendMessageM $ sendMessageRequest (newMsgChat story') $
-          user_first_name user <> " hat die Geschichte beendet. Hier ist sie " <>
-          "in voller Pracht:\n" <>
-          "\n" <>
-          T.unlines (map phrase (sentences story')) <>
-          "\n" <>
-          "Lust auf nochmal? Schreib einfach /neu!"
+        endStory user story'
         return $ Just $ setNoStory s
       else do
         send $ "Ist notiert!" <>
           maybe
-            "Sobald weitere Spieler einsteigen, dürfen die weiterspielen."
+            " Sobald weitere Spieler einsteigen, dürfen die weiterspielen."
             (\nu -> " Als nächstes ist " <> user_first_name nu <> " dran.")
             (nextToPlay story')
         let s' = setCurrentStory story' s
@@ -230,6 +256,9 @@ handleUpdate s Update{ callback_query = Just cb }
           { cq_url = Just "https://t.me/umklappbot?start=join" }
       return Nothing
     else do
+      void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+          { cq_text = Just $ if wants_to_join then "Schön dass du dabei bist!" else "Schade, andermal vielleicht."
+          }
       let story' = makeActive wants_to_join story user
       updateIntroMessage story'
       let s' = setCurrentStory story' s
