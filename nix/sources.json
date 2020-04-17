@@ -11,18 +11,6 @@
         "url": "https://github.com/nmattia/niv/archive/f73bf8d584148677b01859677a63191c31911eae.tar.gz",
         "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
     },
-    "nixpkgs": {
-        "branch": "nixos-20.03",
-        "description": "Nix Packages collection",
-        "homepage": "https://github.com/NixOS/nixpkgs",
-        "owner": "NixOS",
-        "repo": "nixpkgs",
-        "rev": "a438aed5a6ceda6beaa998af1c67a38f4b4c3156",
-        "sha256": "0di45qxffbqpn0rwzaq20dlm25asvwfwqwy66zysrxq8xgk8vjll",
-        "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/a438aed5a6ceda6beaa998af1c67a38f4b4c3156.tar.gz",
-        "url_template": "https://github.com/<owner>/<repo>/archive/<rev>.tar.gz"
-    },
     "nixpkgs-static": {
         "branch": "master",
         "description": "easily build most Haskell programs into fully static Linux executables",
