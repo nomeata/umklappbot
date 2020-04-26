@@ -198,6 +198,20 @@ handleUpdate s Update{ message = Just m } = do
       endStory user story
       return $ Just $ setNoStory s
 
+    | Just txt <- text m
+    , Group <- chat_type (chat m)
+    , "/nag" `T.isPrefixOf` txt -> do
+      case currentStory s of
+        Nothing -> send $ "Es läuft gerade keine Geschichte. Mit /neu startest du eine neue!"
+        Just story ->
+          case nextUser story of
+            Just u -> do
+                send $ "Es ist gerade " <> user_first_name u <> " dran, ich nerv mal ein biscshen."
+                askNextPlayer s
+            Nothing ->
+                send $ "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
+      return Nothing
+
     | iJoined m -> do
       send $
         "Hallo! Ich bin der UmklappBot, mit mir könnt ihr das Umklappspiel spielen." <>
