@@ -189,7 +189,7 @@ dispatchUpdate s Update{ message = Just m } | Private <- chat_type (chat m)
     | Just _user <- pure $ from m
     , Just txt <- pure $ text m
     , (sid, _story) <- M.toList (stories s)
-    , ("/start join " <> UUID.toText sid) `T.isPrefixOf` txt
+    , ("/start join" <> UUID.toText sid) `T.isPrefixOf` txt
     ]
 dispatchUpdate s Update{ message = Just m } | isGroupMessage m
     = getFirst $ mconcat
@@ -296,14 +296,14 @@ handleOutOfStory _ u = do
 handleStory :: Story -> Update -> TelegramClient (Maybe Story)
 handleStory story Update{ message = Just m }
     | Just txt <- text m
-    , ("/start join " <> UUID.toText (storyId story)) `T.isPrefixOf` txt
+    , ("/start join" <> UUID.toText (storyId story)) `T.isPrefixOf` txt
     , Private <- chat_type (chat m)
     = do
       send "Schön dass du dabei bist!"
       Just <$> userJoins user story
 
     | Just txt <- text m
-    , "/start join " `T.isPrefixOf` txt
+    , "/start join" `T.isPrefixOf` txt
     , Private <- chat_type (chat m)
     = do
       send "Du schon bei einem anderen Spiel dabei... "
@@ -385,7 +385,7 @@ handleStory story Update{ callback_query = Just cb }
           Just <$> userJoins user story
         else do
           void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-              { cq_url = Just $ "https://t.me/umklappbot?start=join " <> UUID.toText (storyId story) }
+              { cq_url = Just $ "https://t.me/umklappbot?start=join" <> UUID.toText (storyId story) }
           return (Just story)
       else do
         void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
