@@ -78,6 +78,7 @@ let
     telegram-api,
     aws,
     pretty-show,
+    uuid,
   }:
       mkDerivation {
         pname = "umklappbot";
@@ -97,6 +98,7 @@ let
 	    telegram-api
 	    aws
             pretty-show
+            uuid
 	];
         license = stdenv.lib.licenses.bsd3;
         configureFlags = [
