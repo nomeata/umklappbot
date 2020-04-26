@@ -42,6 +42,7 @@ executable umklappbot
   build-depends: resourcet
   build-depends: data-default
   build-depends: pretty-show
+  build-depends: uuid
   default-language:    Haskell2010
 
   ghc-options: -Wall

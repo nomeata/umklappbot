@@ -7,9 +7,12 @@ import qualified Data.Text as T
 import Web.Telegram.API.Bot (User, ChatId)
 import GHC.Generics
 import Data.Aeson.Types
+import Data.UUID
+import qualified Data.Map as M
 
 data Story = Story
-    { title :: T.Text
+    { storyId :: StoryId
+    , title :: T.Text
     , startedBy :: User
     , activeUsers :: [User]
     , nextUser :: Maybe User
@@ -23,9 +26,15 @@ data Sentence = Sentence
     , author :: User
     } deriving (Show, Generic, ToJSON, FromJSON)
 
+
+-- Just using a list of stories, and then always searching
+-- for the right story given a user or chat,
+-- is of course not efficient. But lets get functionality first right.
+-- Maybe data base queries can be used instead of maintaining our own indices
+type StoryId = UUID
 newtype State = State
-    { currentStory :: Maybe Story
+    { stories :: M.Map StoryId Story
     } deriving (Show, Generic, ToJSON, FromJSON)
 
 newState :: State
-newState = State Nothing
+newState = State mempty

@@ -10,6 +10,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# OPTIONS_GHC -Wno-orphans  #-}
 
+module Main (main, initState) where
+
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -142,6 +144,24 @@ plainResponse txt =
 telegramPath :: Settings -> T.Text
 telegramPath (Token token, _, _, _) = "/telegram/" <> token
 
+initState :: IO T.Text
+initState = do
+  cfg <- Aws.baseConfiguration
+  let dcfg = (def :: D.DdbConfiguration Aws.NormalQuery ) { D.ddbcRegion = D.ddbEuCentral1 }
+  mgr <- newManager tlsManagerSettings
+  r <- runResourceT $ Aws.aws cfg dcfg mgr $
+        (D.putItem "umklappbot" $
+           D.item
+            [ D.attr @T.Text "id" "state"
+            , D.attr "state" newState
+            ]
+        )
+        { D.piExpect = D.Conditions D.CondAnd [
+             D.Condition "id" D.IsNull
+          ]
+        }
+  return $ T.pack $ show (Aws.responseResult r)
+
 handler :: Settings -> Event -> Context -> IO (Either String Response)
 handler settings Event{body, path} _context
     | path == telegramPath settings =
@@ -167,22 +187,7 @@ handler settings Event{body, path} _context
                     , body = "Done"
                     }
 
-    | path == "/init" = do
-        cfg <- Aws.baseConfiguration
-        let dcfg = (def :: D.DdbConfiguration Aws.NormalQuery ) { D.ddbcRegion = D.ddbEuCentral1 }
-        mgr <- newManager tlsManagerSettings
-        r <- runResourceT $ Aws.aws cfg dcfg mgr $
-            (D.putItem "umklappbot" $
-               D.item
-                [ D.attr @T.Text "id" "state"
-                , D.attr "state" newState
-                ]
-            )
-            { D.piExpect = D.Conditions D.CondAnd [
-                 D.Condition "id" D.IsNull
-              ]
-            }
-        plainResponse $ T.pack $ show (Aws.responseResult r)
+    | path == "/init" = initState >>= plainResponse
 
     | path == "/dump" = do
         cfg <- Aws.baseConfiguration

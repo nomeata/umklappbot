@@ -1,11 +1,15 @@
 {-# LANGUAGE MultiWayIf #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LambdaCase #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Telegram (handleUpdate) where
 
 import qualified Data.Text as T
+import qualified Data.Map as M
 import Data.Maybe
+import Data.Monoid
 import Data.Function
 import Data.Foldable
 import Control.Monad
@@ -15,6 +19,8 @@ import Servant.Client.Core (ClientError(..), responseStatusCode)
 import Network.HTTP.Types.Status (status403)
 import Web.Telegram.API.Bot
 import Text.Show.Pretty
+import qualified Data.UUID as UUID
+import Data.UUID.V4
 -- import Text.Printf
 
 import Umklapp
@@ -25,9 +31,10 @@ iJoined m =
     toList (new_chat_member m) ++
     concat (toList (new_chat_members m))
 
-newStory :: User -> Story
-newStory user = Story
-  { title = ""
+newStory :: StoryId -> User -> Story
+newStory sid user = Story
+  { storyId = sid
+  , title = ""
   , startedBy = user
   , activeUsers = []
   , nextUser = Nothing
@@ -43,12 +50,6 @@ isEndPhrase txt = or
   , "ende" `T.isSuffixOf` txt
   , "ende." `T.isSuffixOf` txt
   ]
-
-setNoStory :: State -> State
-setNoStory s = s { currentStory = Nothing }
-
-setCurrentStory :: Story -> State -> State
-setCurrentStory story s = s { currentStory = Just story }
 
 makeActive :: User -> Story -> Story
 makeActive u story =
@@ -89,7 +90,7 @@ introMessage story =
 updateIntroMessage :: Story -> TelegramClient ()
 updateIntroMessage story = catchError
   (void $ editMessageTextM $ (editMessageTextRequest (newMsgChat story) (newMsg story) (introMessage story))
-    { emt_reply_markup = Just (InlineKeyboardMarkup joinKeyboard) })
+    { emt_reply_markup = Just (InlineKeyboardMarkup (joinKeyboard story)) })
   (\r -> liftIO $ putStrLn $ "Ignoring failure updating intro message:\n" ++ show r )
 
 removeUser :: User -> [User] -> [User]
@@ -115,10 +116,10 @@ nextToPlay story
       where us' = removeUser a us
 
 
-joinKeyboard :: [[InlineKeyboardButton]]
-joinKeyboard = [
-    [ (inlineKeyboardButton "Ich!") { ikb_callback_data = Just "join" }
-    , (inlineKeyboardButton "Ich nicht.") { ikb_callback_data = Just "unjoin" }
+joinKeyboard :: Story -> [[InlineKeyboardButton]]
+joinKeyboard story = [
+    [ (inlineKeyboardButton "Ich!") { ikb_callback_data = Just $ "join " <> UUID.toText (storyId story) }
+    , (inlineKeyboardButton "Ich nicht.") { ikb_callback_data = Just $ "unjoin " <> UUID.toText (storyId story) }
     ]
   ]
 
@@ -134,10 +135,9 @@ sendPrivateMessage u msg =
 
 
 
-askNextPlayer :: State -> TelegramClient State
-askNextPlayer s
-  | Just story <- currentStory s
-  , Just u <- nextUser story
+askNextPlayer :: Story -> TelegramClient Story
+askNextPlayer story
+  | Just u <- nextUser story
   = do
     r <- sendPrivateMessage u $
       if null (sentences story)
@@ -149,9 +149,9 @@ askNextPlayer s
          "Wie soll der nächste Satz lauten?\n" <>
          "Wenn er mit „Ende.“ endet, beendet er die Geschichte."
     case r of
-        True -> return s
-        False -> userLeaves s u
-askNextPlayer s = return s
+        True -> return story
+        False -> userLeaves story u
+askNextPlayer story = return story
 
 
 endStory :: User -> Story -> TelegramClient ()
@@ -164,76 +164,97 @@ endStory user story = do
     "\n" <>
     "Lust auf nochmal? Schreib einfach /neu!"
 
-userJoins :: State -> User -> Story -> TelegramClient (Maybe State)
-userJoins s user story = do
+userJoins :: User -> Story -> TelegramClient Story
+userJoins user story = do
   let story' =
        pickNextPlayer $
        makeActive user $
        story
   updateIntroMessage story'
-  let s' = setCurrentStory story' s
-  Just <$> askNextPlayer s'
+  askNextPlayer story'
 
-userLeaves :: State -> User -> TelegramClient State
-userLeaves s user
-  | Just story <- currentStory s = do
+userLeaves :: Story -> User -> TelegramClient Story
+userLeaves story user = do
     let story' = makeInactive user story
     updateIntroMessage story'
-    let s' = setCurrentStory story' s
-    askNextPlayer s'
-userLeaves s _ = return s
+    askNextPlayer story'
+
+-- Find the story to send this update to
+dispatchUpdate :: State -> Update -> Maybe StoryId
+dispatchUpdate s Update{ message = Just m } | Private <- chat_type (chat m)
+    = getFirst $ mconcat $
+    [ First (Just sid)
+    | Just user <- pure $ from m
+    , (sid, story) <- M.toList (stories s)
+    , user_id user `elem` (user_id <$> activeUsers story)
+    ] <>
+    [ First (Just sid)
+    | Just _user <- pure $ from m
+    , Just txt <- pure $ text m
+    , (sid, _story) <- M.toList (stories s)
+    , ("/start join " <> UUID.toText sid) `T.isPrefixOf` txt
+    ]
+dispatchUpdate s Update{ message = Just m } | Group <- chat_type (chat m)
+    = getFirst $ mconcat
+    [ First (Just sid)
+    | (sid, story) <- M.toList (stories s)
+    , c == newMsgChat story
+    ]
+  where c = ChatId (chat_id (chat m))
+dispatchUpdate s Update{ callback_query = Just cb } | Just dat <- cq_data cb
+    = getFirst $ mconcat
+    [ First (Just sid)
+    | (sid, _story) <- M.toList (stories s)
+    , UUID.toText sid `T.isSuffixOf` dat
+    ]
+dispatchUpdate _ _ = Nothing
 
 
 handleUpdate :: State -> Update -> TelegramClient (Maybe State)
-handleUpdate s Update{ message = Just m } = do
-  let c = ChatId (chat_id (chat m))
-  let send = void . sendMessageM . sendMessageRequest c
-  let user = fromJust (from m)
-  if
+handleUpdate s update = case dispatchUpdate s update of
+  Just sid -> do
+    let story = stories s M.! sid
+    handleStory story update >>= \case
+         Nothing -> return $ Just $ s { stories = M.delete sid (stories s) }
+         Just story' -> return $ Just $ s { stories = M.insert sid story' (stories s) }
+  Nothing -> handleOutOfStory s update
+
+handleOutOfStory :: State -> Update -> TelegramClient (Maybe State)
+handleOutOfStory s Update{ message = Just m }
     | Just _txt <- text m
-    , Nothing <- from m -> do
+    , Nothing <- from m
+    = do
       send "Sorry, I am confused. Who are you?"
       return Nothing
 
     | Just txt <- text m
-    , Just story <- currentStory s
-    , "/start join" `T.isPrefixOf` txt
-    , Private <- chat_type (chat m)
-    -> do
-        send "Schön dass du dabei bist!"
-        userJoins s user  story
-
-    | Just txt <- text m
     , "/start" `T.isPrefixOf` txt
-    , Private <- chat_type (chat m) -> do
+    , Private <- chat_type (chat m)
+    = do
       liftIO $ pPrint (txt, user)
-      send "Hallo! Lade mich doch in eine Gruppe ein!"
+      send "Hallo! Lade mich doch in eine Gruppe ein, und starte dort ein Spiel!"
       return Nothing
 
     | Just txt <- text m
-    , Just story <- currentStory s
+    , "/neu" `T.isPrefixOf` txt
     , Group <- chat_type (chat m)
-    , "/end" `T.isPrefixOf` txt -> do
-      endStory user story
-      return $ Just $ setNoStory s
+    = do
+      sid <- liftIO nextRandom
+      let story = newStory sid user
+      r <- sendMessageM $ (sendMessageRequest c (introMessage story))
+        { message_reply_markup = Just (ReplyInlineKeyboardMarkup (joinKeyboard story)) }
+      let story' = story { newMsgChat = c, newMsg = message_id (result r) }
+      return $ Just $ s { stories = M.insert sid story' (stories s) }
 
     | Just txt <- text m
+    , any (`T.isPrefixOf` txt) ["/end", "/nag", "/weristdran"]
     , Group <- chat_type (chat m)
-    , "/nag" `T.isPrefixOf` txt -> do
-      case currentStory s of
-        Nothing -> do
-            send $ "Es läuft gerade keine Geschichte. Mit /neu startest du eine neue!"
-            return Nothing
-        Just story ->
-          case nextUser story of
-            Just u -> do
-                send $ "Es ist gerade " <> user_first_name u <> " dran, ich nerv mal ein bisschen."
-                Just <$> askNextPlayer s
-            Nothing -> do
-                send $ "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
-                return Nothing
+    = do
+      send "Es läuft gerade keine Geschichte. Starte doch eine mit /neu!"
+      return Nothing
 
-    | iJoined m -> do
+    | iJoined m
+    = do
       send $
         "Hallo! Ich bin der UmklappBot, mit mir könnt ihr das Umklappspiel spielen." <>
         "Dabei schreiben mehrere reihum an einer Geschichte, Satz für Satz, und sehen " <>
@@ -241,101 +262,121 @@ handleUpdate s Update{ message = Just m } = do
         "startest du eine neue Geschichte."
       return Nothing
 
+    | Just _ <- text m
+    , Private <- chat_type (chat m)
+    = do
+      send "Schön von dir zu hören. Aber eigentlich erwarte ich von dir gerade keinen Beitrag \129300"
+      return Nothing
+  where
+    c = ChatId (chat_id (chat m))
+    send = void . sendMessageM . sendMessageRequest c
+    user = fromJust (from m)
+
+handleOutOfStory _ u = do
+  liftIO $ putStrLn $ "Unhandled out-of-story update:\n" ++ ppShow u
+  return Nothing
+
+
+handleStory :: Story -> Update -> TelegramClient (Maybe Story)
+handleStory story Update{ message = Just m }
     | Just txt <- text m
-    , "/neu" `T.isPrefixOf` txt
+    , "/start join" `T.isPrefixOf` txt
+    , Private <- chat_type (chat m)
+    = do
+      send "Schön dass du dabei bist!"
+      Just <$> userJoins user story
+
+    | Just txt <- text m
     , Group <- chat_type (chat m)
-    , Nothing <- currentStory s
-    -> do
-      -- TODO: Check if in a group
-      let story = newStory user
-      r <- sendMessageM $ (sendMessageRequest c (introMessage story))
-        { message_reply_markup = Just (ReplyInlineKeyboardMarkup joinKeyboard) }
-      let story' = story { newMsgChat = c, newMsg = message_id (result r) }
-      return $ Just $ setCurrentStory story' s
+    , "/end" `T.isPrefixOf` txt
+    = do
+      endStory user story
+      return Nothing
+
+    | Just txt <- text m
+    , Group <- chat_type (chat m)
+    , "/nag" `T.isPrefixOf` txt
+    = do
+      case nextUser story of
+        Just u -> do
+            send $ "Es ist gerade " <> user_first_name u <> " dran, ich nerv mal ein bisschen."
+            Just <$> askNextPlayer story
+        Nothing -> do
+            send $ "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
+            return (Just story)
 
     | Just txt <- text m
     , "/neu" `T.isPrefixOf` txt
     , Group <- chat_type (chat m)
-    , Just story <- currentStory s
-    -> do
+    = do
       send $ "Es läuft schon eine Geschichte, macht doch die erstmal fertig. " <>
           maybe "Es fehlen allerdings noch Mitspieler."
             (\nu -> "Als nächstes ist " <> user_first_name nu <> " dran.") (nextUser story)
-      return Nothing
+      return (Just story)
 
     | Just txt <- text m
     , "/weristdran" `T.isPrefixOf` txt
-    -> do
-      send $ case currentStory s of
-        Nothing -> "Es läuft gerade keine Geschichte. Mit /neu startest du eine neue!"
-        Just story ->
-          case nextUser story of
-            Just u -> "Es ist gerade " <> user_first_name u <> " dran. " <>
-                      user_first_name u <> ", schau mal im privaten Chat!"
-            Nothing -> "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
-      return Nothing
+    = do
+      send $ case nextUser story of
+        Just u -> "Es ist gerade " <> user_first_name u <> " dran. " <>
+                  user_first_name u <> ", schau mal im privaten Chat!"
+        Nothing -> "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
+      return (Just story)
 
     | Just txt <- text m
-    , Just story <- currentStory s
     , Just active_user <- nextUser story
     , user_id active_user == user_id user
     , Private <- chat_type (chat m)
-    -> do
+    = do
       let story' = pickNextPlayer $ addSentence user txt story
       if isEndPhrase txt
       then do
-        send $ "Das wars! Die volle Geschichte kannst du im Gruppenchat lesen."
+        send "Das wars! Die volle Geschichte kannst du im Gruppenchat lesen."
         endStory user story'
-        return $ Just $ setNoStory s
+        return Nothing
       else do
         send $ "Ist notiert! " <>
           maybe
             "Sobald weitere Spieler einsteigen, dürfen die weiterspielen."
             (\nu -> "Als nächstes ist " <> user_first_name nu <> " dran.")
             (nextUser story')
-        let s' = setCurrentStory story' s
-        Just <$> askNextPlayer s'
+        Just <$> askNextPlayer story'
 
-    | Just _ <- text m
-    , Private <- chat_type (chat m)
-    -> do
-      send $ "Schön von dir zu hören. Aber eigentlich erwarte ich von dir gerade keinen Beitrag \129300"
-      return Nothing
+  where
+    c = ChatId (chat_id (chat m))
+    send = void . sendMessageM . sendMessageRequest c
+    user = fromJust (from m)
 
-    | otherwise -> do
-      liftIO $ pPrint m
-      return Nothing
-
-handleUpdate s Update{ callback_query = Just cb }
+handleStory story Update{ callback_query = Just cb }
     | Just wants_to_join <- cq_data cb >>= isJoinCallback
-    , Just story <- currentStory s
     = do
     let user = cq_from cb
 
     if wants_to_join
     then do
-      success <- sendPrivateMessage user $ "Schön dass du dabei bist!"
+      success <- sendPrivateMessage user "Schön dass du dabei bist!"
       if success
       then do
         void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
             { cq_text = Nothing }
-        userJoins s user story
+        Just <$> userJoins user story
       else do
         void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-            { cq_url = Just "https://t.me/umklappbot?start=join" }
-        return Nothing
+            { cq_url = Just $ "https://t.me/umklappbot?start=join " <> UUID.toText (storyId story) }
+        return (Just story)
     else do
       void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
           { cq_text = Just "Schade, andermal vielleicht." }
-      Just <$> userLeaves s user
-  where
-    isJoinCallback :: T.Text -> Maybe Bool
-    isJoinCallback "join" = Just True
-    isJoinCallback "unjoin" = Just False
-    isJoinCallback _ = Nothing
+      Just <$> userLeaves story user
+
+handleStory story u = do
+  liftIO $ putStrLn $ "Unhandled in-story update:\n" ++ ppShow u
+  return (Just story)
+
+isJoinCallback :: T.Text -> Maybe Bool
+isJoinCallback t | "join" `T.isPrefixOf` t = Just True
+isJoinCallback t | "unjoin" `T.isPrefixOf` t = Just False
+isJoinCallback _ = Nothing
 
 
-
-handleUpdate _ u = do
-  liftIO $ putStrLn $ "Unhandled message:\n" ++ ppShow u
-  return Nothing
+deriving instance Eq ChatId
