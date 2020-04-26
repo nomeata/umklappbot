@@ -261,7 +261,7 @@ handleOutOfStory s Update{ message = Just m }
     | iJoined m
     = do
       send $
-        "Hallo! Ich bin der UmklappBot, mit mir könnt ihr das Umklappspiel spielen." <>
+        "Hallo! Ich bin der UmklappBot, mit mir könnt ihr das Umklappspiel spielen. " <>
         "Dabei schreiben mehrere reihum an einer Geschichte, Satz für Satz, und sehen " <>
         "dabei stets nur den vorherigen Satz. Probiere es doch einfach aus! Mit /neu " <>
         "startest du eine neue Geschichte."
