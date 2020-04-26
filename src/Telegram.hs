@@ -364,6 +364,11 @@ handleStory story Update{ message = Just m }
             (nextUser story')
         Just <$> askNextPlayer story'
 
+    | Just _ <- text m
+    , Private <- chat_type (chat m)
+    = do
+      send "Schön von dir zu hören. Aber eigentlich erwarte ich von dir gerade keinen Beitrag \129300"
+      return (Just story)
   where
     c = ChatId (chat_id (chat m))
     send = void . sendMessageM . sendMessageRequest c
