@@ -27,9 +27,9 @@ import Umklapp
 
 iJoined :: Message -> Bool
 iJoined m =
-  any (\u -> user_username u == Just "UmklappBot") $
-    toList (new_chat_member m) ++
-    concat (toList (new_chat_members m))
+  any (\u -> user_username u == Just "UmklappBot")
+    (toList (new_chat_member m) ++ concat (toList (new_chat_members m)))
+  || (group_chat_created m == Just True)
 
 newStory :: StoryId -> User -> Story
 newStory sid user = Story
@@ -202,7 +202,12 @@ dispatchUpdate s Update{ message = Just m } | Group <- chat_type (chat m)
     ]
   where c = ChatId (chat_id (chat m))
 dispatchUpdate s Update{ callback_query = Just cb } | Just dat <- cq_data cb
-    = getFirst $ mconcat
+    = getFirst $ mconcat $
+    [ First (Just sid)
+    | let user = cq_from cb
+    , (sid, story) <- M.toList (stories s)
+    , user_id user `elem` (user_id <$> activeUsers story)
+    ] <>
     [ First (Just sid)
     | (sid, _story) <- M.toList (stories s)
     , UUID.toText sid `T.isSuffixOf` dat
@@ -272,6 +277,13 @@ handleOutOfStory s Update{ message = Just m }
     send = void . sendMessageM . sendMessageRequest c
     user = fromJust (from m)
 
+handleOutOfStory _ Update{ callback_query = Just cb }
+    | Just (_wants_to_join, _join_story_id) <- cq_data cb >>= isJoinCallback
+    = do
+      void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+          { cq_text = Just "Diese Geschichte ist schon beendet." }
+      return Nothing
+
 handleOutOfStory _ u = do
   liftIO $ putStrLn $ "Unhandled out-of-story update:\n" ++ ppShow u
   return Nothing
@@ -280,11 +292,18 @@ handleOutOfStory _ u = do
 handleStory :: Story -> Update -> TelegramClient (Maybe Story)
 handleStory story Update{ message = Just m }
     | Just txt <- text m
-    , "/start join" `T.isPrefixOf` txt
+    , ("/start join " <> UUID.toText (storyId story)) `T.isPrefixOf` txt
     , Private <- chat_type (chat m)
     = do
       send "Schön dass du dabei bist!"
       Just <$> userJoins user story
+
+    | Just txt <- text m
+    , "/start join " `T.isPrefixOf` txt
+    , Private <- chat_type (chat m)
+    = do
+      send "Du schon bei einem anderen Spiel dabei... "
+      return (Just story)
 
     | Just txt <- text m
     , Group <- chat_type (chat m)
@@ -296,14 +315,13 @@ handleStory story Update{ message = Just m }
     | Just txt <- text m
     , Group <- chat_type (chat m)
     , "/nag" `T.isPrefixOf` txt
-    = do
-      case nextUser story of
+    = case nextUser story of
         Just u -> do
-            send $ "Es ist gerade " <> user_first_name u <> " dran, ich nerv mal ein bisschen."
-            Just <$> askNextPlayer story
+          send $ "Es ist gerade " <> user_first_name u <> " dran, ich nerv mal ein bisschen."
+          Just <$> askNextPlayer story
         Nothing -> do
-            send $ "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
-            return (Just story)
+          send "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
+          return (Just story)
 
     | Just txt <- text m
     , "/neu" `T.isPrefixOf` txt
@@ -348,34 +366,48 @@ handleStory story Update{ message = Just m }
     user = fromJust (from m)
 
 handleStory story Update{ callback_query = Just cb }
-    | Just wants_to_join <- cq_data cb >>= isJoinCallback
+    | Just (wants_to_join, join_story_id) <- cq_data cb >>= isJoinCallback
     = do
     let user = cq_from cb
 
-    if wants_to_join
-    then do
-      success <- sendPrivateMessage user "Schön dass du dabei bist!"
-      if success
+    if join_story_id == storyId story
+    then if wants_to_join
       then do
-        void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-            { cq_text = Nothing }
-        Just <$> userJoins user story
+        success <- sendPrivateMessage user "Schön dass du dabei bist!"
+        if success
+        then do
+          void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+              { cq_text = Nothing }
+          Just <$> userJoins user story
+        else do
+          void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+              { cq_url = Just $ "https://t.me/umklappbot?start=join " <> UUID.toText (storyId story) }
+          return (Just story)
       else do
         void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-            { cq_url = Just $ "https://t.me/umklappbot?start=join " <> UUID.toText (storyId story) }
+            { cq_text = Just "Schade, andermal vielleicht." }
+        Just <$> userLeaves story user
+    else if wants_to_join
+      then do
+        void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+            { cq_text = Just "Du schreibst doch schon bei einem anderen Spiel mit!" }
         return (Just story)
-    else do
-      void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-          { cq_text = Just "Schade, andermal vielleicht." }
-      Just <$> userLeaves story user
+      else do
+        void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+            { cq_text = Just "Du bist bei dem Spiel doch gar nicht dabei!" }
+        return (Just story)
 
 handleStory story u = do
   liftIO $ putStrLn $ "Unhandled in-story update:\n" ++ ppShow u
   return (Just story)
 
-isJoinCallback :: T.Text -> Maybe Bool
-isJoinCallback t | "join" `T.isPrefixOf` t = Just True
-isJoinCallback t | "unjoin" `T.isPrefixOf` t = Just False
+isJoinCallback :: T.Text -> Maybe (Bool, StoryId)
+isJoinCallback t
+  | Just story_id <- "join " `T.stripPrefix` t >>= UUID.fromText
+  = Just (True, story_id)
+isJoinCallback t
+  | Just story_id <- "unjoin " `T.stripPrefix` t >>= UUID.fromText
+  = Just (False, story_id)
 isJoinCallback _ = Nothing
 
 
