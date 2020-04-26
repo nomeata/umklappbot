@@ -28,6 +28,7 @@ newStory user = Story
   { title = ""
   , startedBy = user
   , activeUsers = []
+  , nextUser = Nothing
   , privateChats = M.empty
   , newMsgChat = error "newMsg looked at"
   , newMsg = error "newMsg looked at"
@@ -51,19 +52,32 @@ setCurrentStory story s = s { currentStory = Just story }
 rememberPrivateChat :: User -> Chat -> Story -> Story
 rememberPrivateChat u c story = story { privateChats = M.insert (user_id u) c (privateChats story) }
 
-makeActive :: Bool -> Story -> User -> Story
-makeActive True story u =
+makeActive :: User -> Story -> Story
+makeActive u story =
     if any (((==) `on` user_id) u) (activeUsers story)
     then story
     else story { activeUsers = activeUsers story ++ [u] }
-makeActive False story u =
-    story { activeUsers = removeUser u (activeUsers story) }
+
+makeInactive :: User -> Story -> Story
+makeInactive u story = story
+    { activeUsers = removeUser u (activeUsers story)
+    , nextUser =
+        if Just (user_id u) == (user_id <$> nextUser story)
+        then Nothing
+        else nextUser story
+    }
 
 addSentence :: User -> T.Text -> Story -> Story
 addSentence u t story =
   story
     { sentences = sentences story ++ [Sentence t u]
+    , nextUser = Nothing
     }
+
+pickNextPlayer :: Story -> Story
+pickNextPlayer story
+    | Just _ <- nextUser story = story
+    | otherwise = story { nextUser = nextToPlay story }
 
 introMessage :: Story -> T.Text
 introMessage story =
@@ -113,7 +127,7 @@ joinKeyboard = [
 askNextPlayer :: State -> TelegramClient ()
 askNextPlayer s
   | Just story <- currentStory s
-  , Just u <- nextToPlay story
+  , Just u <- nextUser story
   , Just private_chat <- M.lookup (user_id u) (privateChats story)
   = do
     let c = ChatId (chat_id private_chat)
@@ -139,6 +153,18 @@ endStory user story = do
     "\n" <>
     "Lust auf nochmal? Schreib einfach /neu!"
 
+userJoins :: State -> User -> Story -> TelegramClient (Maybe State)
+userJoins s user story = do
+  let story' =
+       pickNextPlayer $
+       makeActive user $
+       story
+  updateIntroMessage story'
+  let s' = setCurrentStory story' s
+  askNextPlayer s'
+  return $ Just s'
+
+
 handleUpdate :: State -> Update -> TelegramClient (Maybe State)
 handleUpdate s Update{ message = Just m } = do
   let c = ChatId (chat_id (chat m))
@@ -155,13 +181,8 @@ handleUpdate s Update{ message = Just m } = do
     , "/start join" `T.isPrefixOf` txt
     , Private <- chat_type (chat m)
     -> do
-      let story' = makeActive True story user
-      let story'' = rememberPrivateChat user (chat m) story'
-      updateIntroMessage story''
-      send "Schön dass du dabei bist!"
-      let s' = setCurrentStory story'' s
-      askNextPlayer s'
-      return $ Just s'
+        send "Schön dass du dabei bist!"
+        userJoins s user $ rememberPrivateChat user (chat m) story
 
     | Just txt <- text m
     , "/start" `T.isPrefixOf` txt
@@ -202,8 +223,9 @@ handleUpdate s Update{ message = Just m } = do
     , Group <- chat_type (chat m)
     , Just story <- currentStory s
     -> do
-      send $ "Es läuft schon eine Geschichte, macht doch die erstmal fertig." <>
-          maybe "" (\nu -> " Als nächstes ist " <> user_first_name nu <> " dran.") (nextToPlay story)
+      send $ "Es läuft schon eine Geschichte, macht doch die erstmal fertig. " <>
+          maybe "Es fehlen allerdings noch Mitspieler."
+            (\nu -> "Als nächstes ist " <> user_first_name nu <> " dran.") (nextUser story)
       return Nothing
 
     | Just txt <- text m
@@ -212,7 +234,7 @@ handleUpdate s Update{ message = Just m } = do
       send $ case currentStory s of
         Nothing -> "Es läuft gerade keine Geschichte. Mit /neu startest du eine neue!"
         Just story ->
-          case nextToPlay story of
+          case nextUser story of
             Just u -> "Es ist gerade " <> user_first_name u <> " dran. " <>
                       user_first_name u <> ", schau mal im privaten Chat!"
             Nothing -> "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
@@ -220,25 +242,31 @@ handleUpdate s Update{ message = Just m } = do
 
     | Just txt <- text m
     , Just story <- currentStory s
-    , Just active_user <- nextToPlay story
+    , Just active_user <- nextUser story
     , user_id active_user == user_id user
     , Private <- chat_type (chat m)
     -> do
-      let story' = addSentence user txt story
+      let story' = pickNextPlayer $ addSentence user txt story
       if isEndPhrase txt
       then do
         send $ "Das wars! Die volle Geschichte kannst du im Gruppenchat lesen."
         endStory user story'
         return $ Just $ setNoStory s
       else do
-        send $ "Ist notiert!" <>
+        send $ "Ist notiert! " <>
           maybe
-            " Sobald weitere Spieler einsteigen, dürfen die weiterspielen."
-            (\nu -> " Als nächstes ist " <> user_first_name nu <> " dran.")
-            (nextToPlay story')
+            "Sobald weitere Spieler einsteigen, dürfen die weiterspielen."
+            (\nu -> "Als nächstes ist " <> user_first_name nu <> " dran.")
+            (nextUser story')
         let s' = setCurrentStory story' s
         askNextPlayer s'
         return $ Just s'
+
+    | Just _ <- text m
+    , Private <- chat_type (chat m)
+    -> do
+      send $ "Schön von dir zu hören. Aber eigentlich erwarte ich von dir gerade keinen Beitrag \129300"
+      return Nothing
 
     | otherwise -> do
       liftIO $ pPrint m
@@ -250,16 +278,21 @@ handleUpdate s Update{ callback_query = Just cb }
     = do
     let user = cq_from cb
 
-    if wants_to_join && user_id user `M.notMember` privateChats story
-    then do
-      void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-          { cq_url = Just "https://t.me/umklappbot?start=join" }
-      return Nothing
+    if wants_to_join
+    then
+        if user_id user `M.notMember` privateChats story
+        then do
+          void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+              { cq_url = Just "https://t.me/umklappbot?start=join" }
+          return Nothing
+        else do
+          void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+              { cq_text = Just "Schön dass du dabei bist!" }
+          userJoins s user story
     else do
       void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-          { cq_text = Just $ if wants_to_join then "Schön dass du dabei bist!" else "Schade, andermal vielleicht."
-          }
-      let story' = makeActive wants_to_join story user
+          { cq_text = Just "Schade, andermal vielleicht." }
+      let story' = makeInactive user story
       updateIntroMessage story'
       let s' = setCurrentStory story' s
       askNextPlayer s'

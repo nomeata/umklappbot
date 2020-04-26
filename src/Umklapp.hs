@@ -14,6 +14,7 @@ data Story = Story
     , startedBy :: User
     , activeUsers :: [User]
     , privateChats :: M.Map Int  Chat -- user id to private chat
+    , nextUser :: Maybe User
     , sentences :: [Sentence]
     , newMsgChat :: ChatId -- chat and message that started this, to update list of players
     , newMsg :: Int
