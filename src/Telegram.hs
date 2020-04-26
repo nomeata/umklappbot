@@ -194,7 +194,7 @@ dispatchUpdate s Update{ message = Just m } | Private <- chat_type (chat m)
     , (sid, _story) <- M.toList (stories s)
     , ("/start join " <> UUID.toText sid) `T.isPrefixOf` txt
     ]
-dispatchUpdate s Update{ message = Just m } | Group <- chat_type (chat m)
+dispatchUpdate s Update{ message = Just m } | isGroupMessage m
     = getFirst $ mconcat
     [ First (Just sid)
     | (sid, story) <- M.toList (stories s)
@@ -224,6 +224,13 @@ handleUpdate s update = case dispatchUpdate s update of
          Just story' -> return $ Just $ s { stories = M.insert sid story' (stories s) }
   Nothing -> handleOutOfStory s update
 
+isGroupMessage :: Message -> Bool
+isGroupMessage m = case chat_type (chat m) of
+    Group -> True
+    Supergroup -> True
+    Channel -> True
+    Private -> False
+
 handleOutOfStory :: State -> Update -> TelegramClient (Maybe State)
 handleOutOfStory s Update{ message = Just m }
     | Just _txt <- text m
@@ -242,7 +249,7 @@ handleOutOfStory s Update{ message = Just m }
 
     | Just txt <- text m
     , "/neu" `T.isPrefixOf` txt
-    , Group <- chat_type (chat m)
+    , isGroupMessage m
     = do
       sid <- liftIO nextRandom
       let story = newStory sid user
@@ -253,7 +260,7 @@ handleOutOfStory s Update{ message = Just m }
 
     | Just txt <- text m
     , any (`T.isPrefixOf` txt) ["/end", "/nag", "/weristdran"]
-    , Group <- chat_type (chat m)
+    , isGroupMessage m
     = do
       send "Es läuft gerade keine Geschichte. Starte doch eine mit /neu!"
       return Nothing
@@ -306,14 +313,14 @@ handleStory story Update{ message = Just m }
       return (Just story)
 
     | Just txt <- text m
-    , Group <- chat_type (chat m)
+    , isGroupMessage m
     , "/end" `T.isPrefixOf` txt
     = do
       endStory user story
       return Nothing
 
     | Just txt <- text m
-    , Group <- chat_type (chat m)
+    , isGroupMessage m
     , "/nag" `T.isPrefixOf` txt
     = case nextUser story of
         Just u -> do
@@ -325,7 +332,7 @@ handleStory story Update{ message = Just m }
 
     | Just txt <- text m
     , "/neu" `T.isPrefixOf` txt
-    , Group <- chat_type (chat m)
+    , isGroupMessage m
     = do
       send $ "Es läuft schon eine Geschichte, macht doch die erstmal fertig. " <>
           maybe "Es fehlen allerdings noch Mitspieler."
