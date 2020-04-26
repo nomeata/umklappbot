@@ -139,7 +139,7 @@ askNextPlayer :: Story -> TelegramClient Story
 askNextPlayer story
   | Just u <- nextUser story
   = do
-    r <- sendPrivateMessage u $
+    success <- sendPrivateMessage u $
       if null (sentences story)
       then "Du fängst an! Wie lautet der erste Satz der Geschichte?"
       else
@@ -148,14 +148,14 @@ askNextPlayer story
          phrase l <> "\n\n" <>
          "Wie soll der nächste Satz lauten?\n" <>
          "Wenn er mit „Ende.“ endet, beendet er die Geschichte."
-    case r of
-        True -> return story
-        False -> userLeaves story u
+    if success
+    then return story
+    else userLeaves story u
 askNextPlayer story = return story
 
 
 endStory :: User -> Story -> TelegramClient ()
-endStory user story = do
+endStory user story =
   void $ sendMessageM $ sendMessageRequest (newMsgChat story) $
     user_first_name user <> " hat die Geschichte beendet. Hier ist sie " <>
     "in voller Pracht:\n" <>
@@ -166,10 +166,7 @@ endStory user story = do
 
 userJoins :: User -> Story -> TelegramClient Story
 userJoins user story = do
-  let story' =
-       pickNextPlayer $
-       makeActive user $
-       story
+  let story' = pickNextPlayer $ makeActive user story
   updateIntroMessage story'
   askNextPlayer story'
 
