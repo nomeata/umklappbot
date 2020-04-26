@@ -15,7 +15,6 @@ import Servant.Client.Core (ClientError(..), responseStatusCode)
 import Network.HTTP.Types.Status (status403)
 import Web.Telegram.API.Bot
 import Text.Show.Pretty
-import qualified Data.Map as M
 -- import Text.Printf
 
 import Umklapp
@@ -32,7 +31,6 @@ newStory user = Story
   , startedBy = user
   , activeUsers = []
   , nextUser = Nothing
-  , privateChats = M.empty
   , newMsgChat = error "newMsg looked at"
   , newMsg = error "newMsg looked at"
   , sentences = []
@@ -51,9 +49,6 @@ setNoStory s = s { currentStory = Nothing }
 
 setCurrentStory :: Story -> State -> State
 setCurrentStory story s = s { currentStory = Just story }
-
-rememberPrivateChat :: User -> Chat -> Story -> Story
-rememberPrivateChat u c story = story { privateChats = M.insert (user_id u) c (privateChats story) }
 
 makeActive :: User -> Story -> Story
 makeActive u story =
@@ -127,20 +122,15 @@ joinKeyboard = [
     ]
   ]
 
--- returns (Just s') when user disconnected
-sendPrivateMessage :: State -> User -> T.Text -> TelegramClient (Maybe State)
-sendPrivateMessage s u msg
-    | Just story <- currentStory s
-    , Just private_chat <- M.lookup (user_id u) (privateChats story)
-    = do
-    let c = ChatId (chat_id private_chat)
-    catchError (Nothing <$ sendMessageM (sendMessageRequest c msg)) $ \case
+-- returns False when user disconnected
+sendPrivateMessage :: User -> T.Text -> TelegramClient Bool
+sendPrivateMessage u msg =
+    catchError (True <$ sendMessageM (sendMessageRequest c msg)) $ \case
         FailureResponse _ res | responseStatusCode res == status403
-            -> return $ Just $ s { currentStory = Just $ story
-                { privateChats = M.delete (user_id u) (privateChats story)}
-               }
+            -> return $ False
         e -> throwError e
-sendPrivateMessage s _ _ = return $ Just s
+  where
+    c = ChatId (fromIntegral (user_id u))
 
 
 
@@ -149,7 +139,7 @@ askNextPlayer s
   | Just story <- currentStory s
   , Just u <- nextUser story
   = do
-    r <- sendPrivateMessage s u $
+    r <- sendPrivateMessage u $
       if null (sentences story)
       then "Du fängst an! Wie lautet der erste Satz der Geschichte?"
       else
@@ -159,8 +149,8 @@ askNextPlayer s
          "Wie soll der nächste Satz lauten?\n" <>
          "Wenn er mit „Ende.“ endet, beendet er die Geschichte."
     case r of
-        Nothing -> return s
-        Just s' -> userLeaves s' u
+        True -> return s
+        False -> userLeaves s u
 askNextPlayer s = return s
 
 
@@ -211,7 +201,7 @@ handleUpdate s Update{ message = Just m } = do
     , Private <- chat_type (chat m)
     -> do
         send "Schön dass du dabei bist!"
-        userJoins s user $ rememberPrivateChat user (chat m) story
+        userJoins s user  story
 
     | Just txt <- text m
     , "/start" `T.isPrefixOf` txt
@@ -323,16 +313,17 @@ handleUpdate s Update{ callback_query = Just cb }
     let user = cq_from cb
 
     if wants_to_join
-    then
-        if user_id user `M.notMember` privateChats story
-        then do
-          void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-              { cq_url = Just "https://t.me/umklappbot?start=join" }
-          return Nothing
-        else do
-          void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
-              { cq_text = Just "Schön dass du dabei bist!" }
-          userJoins s user story
+    then do
+      success <- sendPrivateMessage user $ "Schön dass du dabei bist!"
+      if success
+      then do
+        void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+            { cq_text = Nothing }
+        userJoins s user story
+      else do
+        void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
+            { cq_url = Just "https://t.me/umklappbot?start=join" }
+        return Nothing
     else do
       void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
           { cq_text = Just "Schade, andermal vielleicht." }

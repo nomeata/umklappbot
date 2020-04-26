@@ -4,16 +4,14 @@
 module Umklapp where
 
 import qualified Data.Text as T
-import Web.Telegram.API.Bot (User, Chat, ChatId)
+import Web.Telegram.API.Bot (User, ChatId)
 import GHC.Generics
 import Data.Aeson.Types
-import qualified Data.Map as M
 
 data Story = Story
     { title :: T.Text
     , startedBy :: User
     , activeUsers :: [User]
-    , privateChats :: M.Map Int  Chat -- user id to private chat
     , nextUser :: Maybe User
     , sentences :: [Sentence]
     , newMsgChat :: ChatId -- chat and message that started this, to update list of players
