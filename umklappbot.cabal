@@ -35,6 +35,8 @@ executable umklappbot
   build-depends: http-client
   build-depends: http-client-tls
   build-depends: transformers
+  build-depends: servant-client-core
+  build-depends: http-types
   build-depends: mtl
   build-depends: aws
   build-depends: resourcet

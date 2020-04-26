@@ -1,5 +1,6 @@
 {-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Telegram (handleUpdate) where
 
@@ -10,6 +11,8 @@ import Data.Foldable
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Error.Class
+import Servant.Client.Core (ClientError(..), responseStatusCode)
+import Network.HTTP.Types.Status (status403)
 import Web.Telegram.API.Bot
 import Text.Show.Pretty
 import qualified Data.Map as M
@@ -124,14 +127,29 @@ joinKeyboard = [
     ]
   ]
 
-askNextPlayer :: State -> TelegramClient ()
+-- returns (Just s') when user disconnected
+sendPrivateMessage :: State -> User -> T.Text -> TelegramClient (Maybe State)
+sendPrivateMessage s u msg
+    | Just story <- currentStory s
+    , Just private_chat <- M.lookup (user_id u) (privateChats story)
+    = do
+    let c = ChatId (chat_id private_chat)
+    catchError (Nothing <$ sendMessageM (sendMessageRequest c msg)) $ \case
+        FailureResponse _ res | responseStatusCode res == status403
+            -> return $ Just $ s { currentStory = Just $ story
+                { privateChats = M.delete (user_id u) (privateChats story)}
+               }
+        e -> throwError e
+sendPrivateMessage s _ _ = return $ Just s
+
+
+
+askNextPlayer :: State -> TelegramClient State
 askNextPlayer s
   | Just story <- currentStory s
   , Just u <- nextUser story
-  , Just private_chat <- M.lookup (user_id u) (privateChats story)
   = do
-    let c = ChatId (chat_id private_chat)
-    void $ sendMessageM $ sendMessageRequest c $
+    r <- sendPrivateMessage s u $
       if null (sentences story)
       then "Du fängst an! Wie lautet der erste Satz der Geschichte?"
       else
@@ -140,8 +158,11 @@ askNextPlayer s
          phrase l <> "\n\n" <>
          "Wie soll der nächste Satz lauten?\n" <>
          "Wenn er mit „Ende.“ endet, beendet er die Geschichte."
+    case r of
+        Nothing -> return s
+        Just s' -> userLeaves s' u
+askNextPlayer s = return s
 
-  | otherwise = return ()
 
 endStory :: User -> Story -> TelegramClient ()
 endStory user story = do
@@ -161,8 +182,16 @@ userJoins s user story = do
        story
   updateIntroMessage story'
   let s' = setCurrentStory story' s
-  askNextPlayer s'
-  return $ Just s'
+  Just <$> askNextPlayer s'
+
+userLeaves :: State -> User -> TelegramClient State
+userLeaves s user
+  | Just story <- currentStory s = do
+    let story' = makeInactive user story
+    updateIntroMessage story'
+    let s' = setCurrentStory story' s
+    askNextPlayer s'
+userLeaves s _ = return s
 
 
 handleUpdate :: State -> Update -> TelegramClient (Maybe State)
@@ -202,15 +231,17 @@ handleUpdate s Update{ message = Just m } = do
     , Group <- chat_type (chat m)
     , "/nag" `T.isPrefixOf` txt -> do
       case currentStory s of
-        Nothing -> send $ "Es läuft gerade keine Geschichte. Mit /neu startest du eine neue!"
+        Nothing -> do
+            send $ "Es läuft gerade keine Geschichte. Mit /neu startest du eine neue!"
+            return Nothing
         Just story ->
           case nextUser story of
             Just u -> do
-                send $ "Es ist gerade " <> user_first_name u <> " dran, ich nerv mal ein biscshen."
-                askNextPlayer s
-            Nothing ->
+                send $ "Es ist gerade " <> user_first_name u <> " dran, ich nerv mal ein bisschen."
+                Just <$> askNextPlayer s
+            Nothing -> do
                 send $ "Es läuft eine Geschichte, aber es fehlen noch Mitspieler."
-      return Nothing
+                return Nothing
 
     | iJoined m -> do
       send $
@@ -273,8 +304,7 @@ handleUpdate s Update{ message = Just m } = do
             (\nu -> "Als nächstes ist " <> user_first_name nu <> " dran.")
             (nextUser story')
         let s' = setCurrentStory story' s
-        askNextPlayer s'
-        return $ Just s'
+        Just <$> askNextPlayer s'
 
     | Just _ <- text m
     , Private <- chat_type (chat m)
@@ -306,11 +336,7 @@ handleUpdate s Update{ callback_query = Just cb }
     else do
       void $ answerCallbackQueryM $ (answerCallbackQueryRequest (cq_id cb))
           { cq_text = Just "Schade, andermal vielleicht." }
-      let story' = makeInactive user story
-      updateIntroMessage story'
-      let s' = setCurrentStory story' s
-      askNextPlayer s'
-      return $ Just s'
+      Just <$> userLeaves s user
   where
     isJoinCallback :: T.Text -> Maybe Bool
     isJoinCallback "join" = Just True
