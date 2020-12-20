@@ -6,18 +6,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v2
-    - uses: cachix/install-nix-action@v8
-    - name: Add static-haskell-nix
-      uses: cachix/cachix-action@v5
+    - uses: cachix/install-nix-action@v12
+    - name: Add static-haskell-nix cache
+      uses: cachix/cachix-action@v8
       with:
         name: static-haskell-nix
-        skipNixBuild: true
-    - name: Build umklappbot
-      uses: cachix/cachix-action@v5
+    - name: Add umklappbot cache
+      uses: cachix/cachix-action@v8
       with:
         name: umklappbot
         signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
-        attributes: umklappbot
+    - name: Build umklappbot
+      run: nix-build -A umklappbot
     - name: Build zipfile
       run: |
        nix-build -A function-zip -o function
