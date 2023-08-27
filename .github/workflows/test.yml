@@ -17,7 +17,7 @@ jobs:
         name: umklappbot
         signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
     - run: nix-build -A function-zip
-    - run: cp function/function.zip .
+    - run: cp result/function.zip .
     - name: Deploy to Amazon Lambda
       if: github.ref == 'refs/heads/master'
       uses: appleboy/lambda-action@master
