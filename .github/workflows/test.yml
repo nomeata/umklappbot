@@ -17,11 +17,7 @@ jobs:
         name: umklappbot
         signingKey: '${{ secrets.CACHIX_SIGNING_KEY }}'
     - name: Build umklappbot
-      run: nix-build -A umklappbot
-    - name: Build zipfile
-      run: |
-       nix-build -A function-zip -o function
-       cp function/function.zip .
+      run: nix-build -A function-zip
     - name: Deploy to Amazon Lambda
       if: github.ref == 'refs/heads/master'
       uses: appleboy/lambda-action@master
@@ -30,4 +26,5 @@ jobs:
         aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         aws_region: ${{ secrets.AWS_REGION }}
         function_name: umklappbot
-        zip_file: function.zip
+        zip_file: result/function.zip
+        runtime: provided.al2
